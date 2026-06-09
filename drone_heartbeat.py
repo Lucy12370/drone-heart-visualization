@@ -22,13 +22,13 @@ if page == "航线规划":
 
         # 校园内操场、湖泊坐标
         st.subheader("起点A")
-        lat_a = st.number_input("纬度", value=32.2339, format="%.4f", key="la")
-        lon_a = st.number_input("经度", value=118.7443, format="%.4f", key="loa")
+        lat_a = st.number_input("纬度", value=32.232384, format="%.4f", key="la")
+        lon_a = st.number_input("经度", value=118.746426, format="%.4f", key="loa")
         btn_a = st.button("设置A点")
 
         st.subheader("终点B")
-        lat_b = st.number_input("纬度", value=32.2317, format="%.4f", key="lb")
-        lon_b = st.number_input("经度", value=118.7435, format="%.4f", key="lob")
+        lat_b = st.number_input("纬度", value=32.236290, format="%.4f", key="lb")
+        lon_b = st.number_input("经度", value=118.750966, format="%.4f", key="lob")
         btn_b = st.button("设置B点")
 
         st.subheader("飞行参数")
