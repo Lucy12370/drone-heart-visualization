@@ -71,7 +71,6 @@ def to_wgs84_display(lat, lng, input_type):
         return lat, lng
 
 def calculate_distance(lat1, lng1, lat2, lng2):
-    """计算两点间距离（米）- 哈弗辛公式"""
     R = 6371000
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -344,38 +343,113 @@ def save_obstacles():
     st.session_state.last_save_time = config["save_time"]
 
 # ==================== 生成航线 ====================
-def generate_waypoints():
-    A_geo = (st.session_state.pointA["lng"], st.session_state.pointA["lat"])
-    B_geo = (st.session_state.pointB["lng"], st.session_state.pointB["lat"])
+def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=5):
+    计算航线点，确保与障碍物保持安全距离
+    A, B: (lng, lat)
+    # 对于每个障碍物，创建缓冲区（安全半径）
+    buffered_obstacles = []
+    for obs in obstacles:
+        if obs.get("height", 0) >= flight_height:
+            poly = Polygon(obs["coordinates"])
+            # 简化：将障碍物扩展安全半径
+            center = poly.centroid
+            meter_per_deg = 111320 * math.cos(math.radians(center.y))
+            buffer_deg = safe_radius / meter_per_deg if meter_per_deg > 0 else 0
+            buffered = poly.buffer(buffer_deg)
+            buffered_obstacles.append(buffered)
     
-    obstacles_for_route = []
-    for obs in st.session_state.polygon_obstacles:
-        obstacles_for_route.append({
-            "coordinates": obs["coordinates"],
-            "height": obs.get("height", 40)
-        })
+    # 检查直线是否与任何缓冲区相交
+    line = LineString([A, B])
+    need_detour = False
+    for buffered in buffered_obstacles:
+        if line.intersects(buffered):
+            need_detour = True
+            break
     
-    route_result = calculate_waypoints_with_safety(
-        A_geo, B_geo, obstacles_for_route,
-        st.session_state.flight_height,
-        st.session_state.safe_radius
-    )
+    if not need_detour:
+        # 不需要绕行，返回直线航点列表
+        return [A, B], "直线飞行（安全）"
     
-    if isinstance(route_result, tuple):
-        waypoints_dict, message = route_result
-        selected_waypoints = waypoints_dict.get(st.session_state.selected_route, [A_geo, B_geo])
-        st.session_state.waypoints = selected_waypoints
-        st.session_state.route_message = message
-        # 创建飞行监控器
-        st.session_state.flight_monitor = FlightMonitor(selected_waypoints, st.session_state.flight_speed)
-        st.session_state.simulation_running = False
-        return selected_waypoints, message
-    else:
-        st.session_state.waypoints = route_result
-        st.session_state.route_message = "直线飞行"
-        st.session_state.flight_monitor = FlightMonitor(route_result, st.session_state.flight_speed)
-        return route_result, "直线飞行"
-
+    # 需要绕行：生成绕行点
+    detour_points = []
+    for buffered in buffered_obstacles:
+        if line.intersects(buffered):
+            intersection = line.intersection(buffered)
+            if not intersection.is_empty:
+                if intersection.geom_type == "LineString":
+                    coords = list(intersection.coords)
+                    if len(coords) >= 2:
+                        detour_points.extend([coords[0], coords[-1]])
+                elif intersection.geom_type == "Point":
+                    detour_points.append((intersection.x, intersection.y))
+    
+    # 去重并排序
+    seen = set()
+    unique_points = []
+    for p in detour_points:
+        key = (round(p[0], 8), round(p[1], 8))
+        if key not in seen:
+            seen.add(key)
+            unique_points.append(p)
+    
+    # 按距离A排序
+    if unique_points:
+        unique_points.sort(key=lambda p: line.project(Point(p)))
+    
+    # 生成三条备选航线
+    waypoints_left = [A]
+    waypoints_right = [A]
+    waypoints_optimal = [A]
+    
+    if not unique_points:
+        return [A, B], "直线飞行（无障碍）"
+    
+    for i, point in enumerate(unique_points):
+        # 计算垂直于航线方向的偏移
+        if i < len(unique_points) - 1:
+            next_point = unique_points[i + 1]
+            dx = next_point[0] - point[0]
+            dy = next_point[1] - point[1]
+        else:
+            dx = B[0] - point[0]
+            dy = B[1] - point[1]
+        
+        length = math.sqrt(dx**2 + dy**2)
+        if length > 0:
+            dx /= length
+            dy /= length
+        else:
+            dx, dy = 1, 0
+        
+        # 垂直向量
+        perp_x = -dy
+        perp_y = dx
+        
+        # 绕行距离
+        lat_mid = (point[1] + B[1]) / 2
+        meter_per_deg = 111320 * math.cos(math.radians(lat_mid))
+        if meter_per_deg <= 0:
+            meter_per_deg = 111320
+        offset_deg = (safe_radius * 2) / meter_per_deg
+        
+        left_point = (point[0] + perp_x * offset_deg, point[1] + perp_y * offset_deg)
+        right_point = (point[0] - perp_x * offset_deg, point[1] - perp_y * offset_deg)
+        
+        waypoints_left.append(left_point)
+        waypoints_right.append(right_point)
+        # 最优：选择左右的中点
+        optimal_point = ((left_point[0] + right_point[0]) / 2, (left_point[1] + right_point[1]) / 2)
+        waypoints_optimal.append(optimal_point)
+    
+    waypoints_left.append(B)
+    waypoints_right.append(B)
+    waypoints_optimal.append(B)
+    
+    return {
+        "left": waypoints_left,
+        "right": waypoints_right,
+        "optimal": waypoints_optimal
+    }, "需要绕行"
 # ==================== 主布局 ====================
 # 创建三列布局：地图 | 监控面板 | 控制面板
 map_col, monitor_col, control_col = st.columns([2.5, 0.8, 1.2])
