@@ -539,26 +539,29 @@ with map_col:
 
 # ==================== 障碍物高度设置弹窗 ====================
 if st.session_state.temp_new_obstacle is not None:
-    with st.expander("设置新障碍物高度", expanded=True):
-        obs_height = st.number_input("障碍物高度 (米)", min_value=0, max_value=500, value=40, step=5)
-        obs_name = st.text_input("障碍物名称", value=f"障碍物{len(st.session_state.polygon_obstacles) + 1}")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("确认添加"):
-                new_obs = {
-                    "name": obs_name,
-                    "coordinates": st.session_state.temp_new_obstacle,
-                    "height": obs_height
-                }
-                st.session_state.polygon_obstacles.append(new_obs)
-                save_obstacles()
-                st.session_state.temp_new_obstacle = None
-                st.rerun()
-        with col2:
-            if st.button("取消"):
-                st.session_state.temp_new_obstacle = None
-                st.rerun()
-
+    # 使用 dialog 或直接在侧边栏显示
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ✏️ 添加新障碍物")
+    
+    obs_height = st.sidebar.number_input("障碍物高度 (米)", min_value=0, max_value=500, value=40, step=5)
+    obs_name = st.sidebar.text_input("障碍物名称", value=f"障碍物{len(st.session_state.polygon_obstacles) + 1}")
+    
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("✅ 确认添加", use_container_width=True):
+            new_obs = {
+                "name": obs_name,
+                "coordinates": st.session_state.temp_new_obstacle,
+                "height": obs_height
+            }
+            st.session_state.polygon_obstacles.append(new_obs)
+            save_obstacles()
+            st.session_state.temp_new_obstacle = None
+            st.rerun()
+    with col2:
+        if st.button("❌ 取消", use_container_width=True):
+            st.session_state.temp_new_obstacle = None
+            st.rerun()
 # ==================== 飞行监控列 ====================
 with monitor_col:
     st.subheader("飞行监控")
