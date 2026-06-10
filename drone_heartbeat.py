@@ -96,26 +96,23 @@ def circle_to_polygon(center_lng, center_lat, radius_meters, num_points=24):
 # ==================== 带安全半径的航线规划 ====================
 def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=5):
     """
-    计算航线点，确保与障碍物保持安全距离
+    计算航线点,确保与障碍物保持安全距离
     A, B: (lng, lat)
     """
-    # 对于每个障碍物，创建缓冲区（安全半径）
+    # 对于每个障碍物,创建缓冲区(安全半径)
     buffered_obstacles = []
     for obs in obstacles:
         if obs.get("height", 0) >= flight_height:
             poly = Polygon(obs["coordinates"])
-            # 简化：将障碍物扩展安全半径
-            # 经纬度转米近似
+            # 简化:将障碍物扩展安全半径
             center = poly.centroid
             meter_per_deg = 111320 * math.cos(math.radians(center.y))
-            buffer_deg = safe_radius / meter_per_deg
+            buffer_deg = safe_radius / meter_per_deg if meter_per_deg > 0 else 0
             buffered = poly.buffer(buffer_deg)
             buffered_obstacles.append(buffered)
     
-    # 使用A*或简化算法计算路径
-    line = LineString([A, B])
-    
     # 检查直线是否与任何缓冲区相交
+    line = LineString([A, B])
     need_detour = False
     for buffered in buffered_obstacles:
         if line.intersects(buffered):
@@ -123,35 +120,47 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
             break
     
     if not need_detour:
-        return [A, B], "直线飞行（安全）"
+        # 不需要绕行,返回直线航点列表
+        return [A, B], "直线飞行(安全)"
     
-    # 需要绕行：生成绕行点
-    # 获取所有障碍物的边界点
+    # 需要绕行:生成绕行点
     detour_points = []
     for buffered in buffered_obstacles:
         if line.intersects(buffered):
             intersection = line.intersection(buffered)
             if not intersection.is_empty:
                 if intersection.geom_type == "LineString":
-                    # 获取入口和出口点
                     coords = list(intersection.coords)
                     if len(coords) >= 2:
                         detour_points.extend([coords[0], coords[-1]])
                 elif intersection.geom_type == "Point":
                     detour_points.append((intersection.x, intersection.y))
     
+    # 去重并排序
+    seen = set()
+    unique_points = []
+    for p in detour_points:
+        key = (round(p[0], 8), round(p[1], 8))
+        if key not in seen:
+            seen.add(key)
+            unique_points.append(p)
+    
     # 按距离A排序
-    detour_points.sort(key=lambda p: line.project(Point(p)))
+    if unique_points:
+        unique_points.sort(key=lambda p: line.project(Point(p)))
     
     # 生成三条备选航线
     waypoints_left = [A]
     waypoints_right = [A]
     waypoints_optimal = [A]
     
-    for i, point in enumerate(detour_points):
+    if not unique_points:
+        return [A, B], "直线飞行(无障碍)"
+    
+    for i, point in enumerate(unique_points):
         # 计算垂直于航线方向的偏移
-        if i < len(detour_points) - 1:
-            next_point = detour_points[i + 1]
+        if i < len(unique_points) - 1:
+            next_point = unique_points[i + 1]
             dx = next_point[0] - point[0]
             dy = next_point[1] - point[1]
         else:
@@ -162,6 +171,8 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
         if length > 0:
             dx /= length
             dy /= length
+        else:
+            dx, dy = 1, 0
         
         # 垂直向量
         perp_x = -dy
@@ -170,18 +181,17 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
         # 绕行距离
         lat_mid = (point[1] + B[1]) / 2
         meter_per_deg = 111320 * math.cos(math.radians(lat_mid))
+        if meter_per_deg <= 0:
+            meter_per_deg = 111320
         offset_deg = (safe_radius * 2) / meter_per_deg
         
         left_point = (point[0] + perp_x * offset_deg, point[1] + perp_y * offset_deg)
         right_point = (point[0] - perp_x * offset_deg, point[1] - perp_y * offset_deg)
         
-        # 最优：选择更短的路径
-        dist_to_left = calculate_distance(point[1], point[0], left_point[1], left_point[0])
-        dist_to_right = calculate_distance(point[1], point[0], right_point[1], right_point[0])
-        optimal_point = left_point if dist_to_left < dist_to_right else right_point
-        
         waypoints_left.append(left_point)
         waypoints_right.append(right_point)
+        # 最优:选择左右的中点
+        optimal_point = ((left_point[0] + right_point[0]) / 2, (left_point[1] + right_point[1]) / 2)
         waypoints_optimal.append(optimal_point)
     
     waypoints_left.append(B)
@@ -193,7 +203,6 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
         "right": waypoints_right,
         "optimal": waypoints_optimal
     }, "需要绕行"
-
 # ==================== 飞行监控类 ====================
 class FlightMonitor:
     def __init__(self, waypoints, speed=10):
