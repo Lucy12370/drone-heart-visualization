@@ -103,39 +103,44 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
         if obs.get("height", 0) >= flight_height:
             need_circumvent.append(obs)
     
+    # 默认直线航线
+    straight_line = [A, B]
+    
     if not need_circumvent:
-        return [A, B], "直线飞行"
+        return straight_line, "直线飞行"
     
     # 检查直线是否与任何障碍物相交
     line = LineString([A, B])
-    intersects = False
     intersect_obstacles = []
     
     for obs in need_circumvent:
-        poly = Polygon(obs["coordinates"])
-        if line.intersects(poly):
-            intersects = True
-            intersection = line.intersection(poly)
-            if not intersection.is_empty:
-                if intersection.geom_type == "LineString":
-                    coords = list(intersection.coords)
-                    if len(coords) >= 2:
+        try:
+            poly = Polygon(obs["coordinates"])
+            if line.intersects(poly):
+                intersection = line.intersection(poly)
+                if not intersection.is_empty:
+                    if intersection.geom_type == "LineString":
+                        coords = list(intersection.coords)
+                        if len(coords) >= 2:
+                            intersect_obstacles.append({
+                                "obs": obs,
+                                "poly": poly,
+                                "entry": coords[0],
+                                "exit": coords[-1]
+                            })
+                    elif intersection.geom_type == "Point":
                         intersect_obstacles.append({
                             "obs": obs,
                             "poly": poly,
-                            "entry": coords[0],
-                            "exit": coords[-1]
+                            "entry": (intersection.x, intersection.y),
+                            "exit": (intersection.x, intersection.y)
                         })
-                elif intersection.geom_type == "Point":
-                    intersect_obstacles.append({
-                        "obs": obs,
-                        "poly": poly,
-                        "entry": (intersection.x, intersection.y),
-                        "exit": (intersection.x, intersection.y)
-                    })
+        except Exception as e:
+            print(f"Error processing obstacle: {e}")
+            continue
     
-    if not intersects:
-        return [A, B], "直线飞行（无障碍物阻挡）"
+    if not intersect_obstacles:
+        return straight_line, "直线飞行（无障碍物阻挡）"
     
     # 按距离起点排序
     intersect_obstacles.sort(key=lambda x: line.project(Point(x["entry"])))
@@ -168,7 +173,7 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
         # 计算绕行偏移量（度）
         lat_mid = (entry[1] + exit_pt[1]) / 2
         meter_per_deg = 111320 * math.cos(math.radians(lat_mid))
-        offset_deg = (safe_radius * 3) / meter_per_deg if meter_per_deg > 0 else 0.0005
+        offset_deg = (safe_radius * 2) / meter_per_deg if meter_per_deg > 0 else 0.0005
         
         # 向左绕行点
         left_avoid = (entry[0] + perp_x * offset_deg, entry[1] + perp_y * offset_deg)
@@ -212,20 +217,25 @@ def calculate_waypoints_with_safety(A, B, obstacles, flight_height, safe_radius=
 # ==================== 飞行监控类 ====================
 class FlightMonitor:
     def __init__(self, waypoints, speed=10):
-        self.waypoints = waypoints
+        self.waypoints = waypoints  # [(lng, lat), ...]
         self.speed = speed
         self.current_index = 0
         self.current_position = waypoints[0] if waypoints else None
         self.start_time = None
         self.is_flying = False
-        self.total_distance = self.calculate_total_distance()
+        self.total_distance = self._calculate_total_distance()
         
-    def calculate_total_distance(self):
+    def _calculate_total_distance(self):
+        """计算总航程"""
+        if not self.waypoints or len(self.waypoints) < 2:
+            return 0
         total = 0
         for i in range(len(self.waypoints) - 1):
             p1 = self.waypoints[i]
             p2 = self.waypoints[i + 1]
-            total += calculate_distance(p1[1], p1[0], p2[1], p2[0])
+            # p1, p2 是 (lng, lat) 格式，需要转换为 (lat, lng)
+            dist = calculate_distance(p1[1], p1[0], p2[1], p2[0])
+            total += dist
         return total
     
     def get_remaining_distance(self):
@@ -312,7 +322,10 @@ if 'flight_speed' not in st.session_state:
 if 'polygon_obstacles' not in st.session_state:
     try:
         with open("obstacle_config.json", "r") as f:
-            st.session_state.polygon_obstacles = json.load(f).get("obstacles", [])
+            data = json.load(f)
+            st.session_state.polygon_obstacles = data.get("obstacles", [])
+            st.session_state.flight_height = data.get("flight_height", 10)
+            st.session_state.safe_radius = data.get("safe_radius", 10)
     except:
         st.session_state.polygon_obstacles = []
 if 'selected_route' not in st.session_state:
@@ -340,9 +353,10 @@ def save_obstacles():
         "obstacles": st.session_state.polygon_obstacles
     }
     with open("obstacle_config.json", "w") as f:
-        json.dump(config, f)
+        json.dump(config, f, indent=2)
 
 def generate_waypoints():
+    """生成航线"""
     A_geo = (st.session_state.pointA["lng"], st.session_state.pointA["lat"])
     B_geo = (st.session_state.pointB["lng"], st.session_state.pointB["lat"])
     
@@ -377,10 +391,20 @@ def generate_waypoints():
     
     if st.session_state.waypoints and len(st.session_state.waypoints) >= 2:
         st.session_state.flight_monitor = FlightMonitor(st.session_state.waypoints, st.session_state.flight_speed)
-        # 打印调试信息
-        st.session_state.flight_log.append(f"航线生成: {len(st.session_state.waypoints)}个航点, 总距离 {st.session_state.flight_monitor.total_distance:.1f}m")
+        # 添加日志
+        st.session_state.flight_log.append(
+            f"{datetime.datetime.now().strftime('%H:%M:%S')} - 航线生成: {len(st.session_state.waypoints)}个航点, 总距离 {st.session_state.flight_monitor.total_distance:.1f}m"
+        )
+    else:
+        st.session_state.flight_log.append(
+            f"{datetime.datetime.now().strftime('%H:%M:%S')} - 航线生成失败，请检查起终点"
+        )
     
     st.session_state.simulation_running = False
+
+# 初始生成航线
+if st.session_state.waypoints is None:
+    generate_waypoints()
 
 # ==================== 布局 ====================
 map_col, monitor_col, control_col = st.columns([2.5, 0.8, 1.2])
@@ -410,7 +434,8 @@ with map_col:
             else:
                 wgs_lng, wgs_lat = lng, lat
             display_waypoints.append([wgs_lat, wgs_lng])
-        folium.PolyLine(display_waypoints, color="blue", weight=4, opacity=0.8).add_to(m)
+        folium.PolyLine(display_waypoints, color="blue", weight=4, opacity=0.8, 
+                       popup=f"航线: {st.session_state.selected_route}").add_to(m)
         
         # 绘制航点
         for i, (lng, lat) in enumerate(st.session_state.waypoints):
@@ -421,6 +446,7 @@ with map_col:
             folium.CircleMarker([wgs_lat, wgs_lng], radius=3, color="blue", fill=True,
                                popup=f"航点{i}").add_to(m)
         
+        # 绘制无人机当前位置
         if st.session_state.flight_monitor and st.session_state.flight_monitor.current_position:
             pos = st.session_state.flight_monitor.current_position
             if st.session_state.coord_type == "GCJ-02":
@@ -484,14 +510,14 @@ with monitor_col:
         if st.session_state.flight_monitor:
             st.metric("总航程", f"{st.session_state.flight_monitor.total_distance:.1f}m")
         else:
-            st.metric("总航程", "N/A")
+            st.metric("总航程", "计算中...")
     else:
         st.warning("请先生成航线")
     
     st.divider()
     st.markdown("### 飞行状态")
     
-    if st.session_state.flight_monitor:
+    if st.session_state.flight_monitor and st.session_state.flight_monitor.total_distance > 0:
         col_a, col_b = st.columns(2)
         with col_a:
             st.metric("当前航点", f"{st.session_state.flight_monitor.current_index + 1}/{len(st.session_state.flight_monitor.waypoints)}")
@@ -506,11 +532,10 @@ with monitor_col:
         st.metric("剩余距离", f"{remaining_dist:.1f}m")
         st.metric("预计到达", f"{est_time:.1f}s")
         
-        if st.session_state.simulation_running:
-            if st.session_state.flight_monitor.total_distance > 0:
-                battery_used = (elapsed / (st.session_state.flight_monitor.total_distance / st.session_state.flight_speed)) * 100
-                battery_used = min(100, battery_used)
-                st.session_state.battery_level = max(0, 100 - battery_used)
+        if st.session_state.simulation_running and st.session_state.flight_monitor.total_distance > 0:
+            progress = 1 - (remaining_dist / st.session_state.flight_monitor.total_distance)
+            battery_used = progress * 100
+            st.session_state.battery_level = max(0, 100 - battery_used)
         
         st.progress(st.session_state.battery_level / 100)
         st.metric("电量", f"{st.session_state.battery_level:.1f}%")
@@ -537,6 +562,8 @@ with monitor_col:
                     st.session_state.simulation_running = False
                     st.session_state.battery_level = 100
                     st.rerun()
+    else:
+        st.warning("请先生成有效航线")
     
     st.divider()
     st.markdown("### 飞行日志")
@@ -552,7 +579,9 @@ with control_col:
     st.subheader("控制面板")
     
     coord_opt = st.radio("坐标系", ["WGS-84", "GCJ-02"], index=1)
-    st.session_state.coord_type = coord_opt
+    if coord_opt != st.session_state.coord_type:
+        st.session_state.coord_type = coord_opt
+        st.rerun()
     
     st.divider()
     st.markdown("### 起终点")
@@ -562,6 +591,7 @@ with control_col:
     lngA = st.number_input("经度", value=st.session_state.pointA["lng"], format="%.6f")
     if st.button("📍 设置A点"):
         st.session_state.pointA = {"lat": latA, "lng": lngA}
+        generate_waypoints()
         st.rerun()
     
     st.markdown("**终点 B (32.2344, 118.749)**")
@@ -569,18 +599,22 @@ with control_col:
     lngB = st.number_input("经度", value=st.session_state.pointB["lng"], format="%.6f", key="lngB")
     if st.button("📍 设置B点"):
         st.session_state.pointB = {"lat": latB, "lng": lngB}
+        generate_waypoints()
         st.rerun()
     
     st.divider()
     st.markdown("### 飞行参数")
+    
     new_height = st.number_input("飞行高度(m)", value=st.session_state.flight_height, step=5)
     if new_height != st.session_state.flight_height:
         st.session_state.flight_height = new_height
+        generate_waypoints()
         st.rerun()
     
     new_radius = st.number_input("安全半径(m)", value=st.session_state.safe_radius, step=1)
     if new_radius != st.session_state.safe_radius:
         st.session_state.safe_radius = new_radius
+        generate_waypoints()
         st.rerun()
     
     new_speed = st.number_input("飞行速度(m/s)", value=st.session_state.flight_speed, step=1)
@@ -599,9 +633,9 @@ with control_col:
         generate_waypoints()
         st.rerun()
     
-    if st.button("🚁 生成航线", type="primary", use_container_width=True):
+    if st.button("🚁 重新生成航线", type="primary", use_container_width=True):
         generate_waypoints()
-        st.success("航线已生成！")
+        st.success("航线已重新生成！")
         st.rerun()
     
     st.divider()
@@ -622,6 +656,7 @@ with control_col:
                 })
                 save_obstacles()
                 st.session_state.temp_new_obstacle = None
+                generate_waypoints()
                 st.success(f"已添加 {new_obs_name} (高度{new_obs_height}m)")
                 st.rerun()
         with col2:
@@ -644,6 +679,7 @@ with control_col:
                     st.session_state.polygon_obstacles = config.get("obstacles", [])
                     st.session_state.flight_height = config.get("flight_height", 10)
                     st.session_state.safe_radius = config.get("safe_radius", 10)
+                generate_waypoints()
                 st.success("已加载障碍物")
                 st.rerun()
             except:
@@ -657,6 +693,7 @@ with control_col:
             os.remove("obstacle_config.json")
         except:
             pass
+        generate_waypoints()
         st.rerun()
     
     st.info(f"📂 障碍物数量: {len(st.session_state.polygon_obstacles)}")
@@ -677,9 +714,11 @@ if st.session_state.simulation_running and st.session_state.flight_monitor:
         st.session_state.flight_log.append(f"{datetime.datetime.now().strftime('%H:%M:%S')} - ✅ 飞行完成!")
         st.rerun()
     else:
-        st.session_state.flight_log.append(
-            f"{datetime.datetime.now().strftime('%H:%M:%S')} - 航点 {st.session_state.flight_monitor.current_index + 1}/{len(st.session_state.flight_monitor.waypoints)}"
-        )
+        # 每秒只记录一次日志
+        if int(time.time() * 2) % 4 == 0:
+            st.session_state.flight_log.append(
+                f"{datetime.datetime.now().strftime('%H:%M:%S')} - 航点 {st.session_state.flight_monitor.current_index + 1}/{len(st.session_state.flight_monitor.waypoints)}, 剩余 {st.session_state.flight_monitor.get_remaining_distance():.1f}m"
+            )
     time.sleep(0.1)
     st.rerun()
 
