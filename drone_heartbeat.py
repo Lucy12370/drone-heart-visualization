@@ -134,6 +134,7 @@ with right_col:
     st.session_state.coord_type = coord_opt
     
     st.subheader("起点 A")
+    st.caption("坐标: 32.2323, 118.749")
     latA = st.number_input("纬度", value=st.session_state.pointA["lat"], format="%.6f")
     lngA = st.number_input("经度", value=st.session_state.pointA["lng"], format="%.6f")
     if st.button("设置A点"):
@@ -141,6 +142,7 @@ with right_col:
         st.rerun()
     
     st.subheader("终点 B")
+    st.caption("坐标: 32.2344, 118.749")
     latB = st.number_input("纬度", value=st.session_state.pointB["lat"], format="%.6f", key="latB")
     lngB = st.number_input("经度", value=st.session_state.pointB["lng"], format="%.6f", key="lngB")
     if st.button("设置B点"):
@@ -193,10 +195,16 @@ with right_col:
     else:
         st.write("暂无")
     
-    if st.button("🗑️ 清理所有障碍物"):
-        st.session_state.polygon_obstacles = []
-        save_obstacles()
-        st.rerun()
+    col_del, col_save = st.columns(2)
+    with col_del:
+        if st.button("🗑️ 清理所有", use_container_width=True):
+            st.session_state.polygon_obstacles = []
+            save_obstacles()
+            st.rerun()
+    with col_save:
+        if st.button("💾 保存配置", use_container_width=True):
+            save_obstacles()
+            st.success("已保存")
     
     st.divider()
     
@@ -206,4 +214,4 @@ with right_col:
         st.rerun()
 
 st.divider()
-st.caption(f"障碍物数量: {len(st.session_state.polygon_obstacles)} | 坐标系: {st.session_state.coord_type}")
+st.caption(f"A点: 32.2323, 118.749 | B点: 32.2344, 118.749 | 障碍物数量: {len(st.session_state.polygon_obstacles)} | 坐标系: {st.session_state.coord_type}")
