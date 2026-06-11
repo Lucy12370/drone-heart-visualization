@@ -577,7 +577,7 @@ with map_col:
                 st.session_state.temp_new_obstacle = coords
                 st.rerun()
                 with monitor_col:
-    st.subheader("飞行监控")  
+                st.subheader("飞行监控")  
     if st.session_state.waypoints:
         st.info(f"航线: {st.session_state.selected_route} | {st.session_state.route_message}")
         st.metric("总航点数", f"{len(st.session_state.waypoints)}")
