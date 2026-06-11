@@ -408,6 +408,7 @@ if st.session_state.waypoints is None:
 
 # ==================== 布局 ====================
 map_col, monitor_col, control_col = st.columns([2.5, 0.8, 1.2])
+# 替换 map_col 中的地图创建部分
 
 with map_col:
     st.subheader("卫星地图 + 障碍物")
@@ -415,17 +416,78 @@ with map_col:
     latA_disp, lngA_disp = to_wgs84_display(st.session_state.pointA["lat"], st.session_state.pointA["lng"], st.session_state.coord_type)
     latB_disp, lngB_disp = to_wgs84_display(st.session_state.pointB["lat"], st.session_state.pointB["lng"], st.session_state.coord_type)
     
+    # 确保坐标有效
+    if not (-90 <= latA_disp <= 90):
+        latA_disp = 32.2323
+        lngA_disp = 118.749
+    if not (-90 <= latB_disp <= 90):
+        latB_disp = 32.2344
+        lngB_disp = 118.749
+    
     center_lat = (latA_disp + latB_disp) / 2
     center_lng = (lngA_disp + lngB_disp) / 2
     
-    m = folium.Map(location=[center_lat, center_lng], zoom_start=17,
-                   tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                   attr="Esri Satellite")
+    # 使用高德地图（更稳定）
+    m = folium.Map(
+        location=[center_lat, center_lng], 
+        zoom_start=18, 
+        control_scale=True,
+        tiles='http://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+        attr='高德地图'
+    )
     
-    folium.Marker([latA_disp, lngA_disp], popup=f"起点 A", icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker([latB_disp, lngB_disp], popup=f"终点 B", icon=folium.Icon(color="red")).add_to(m)
+    # 添加卫星图图层切换
+    folium.TileLayer(
+        tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri Satellite",
+        name="卫星影像"
+    ).add_to(m)
+    folium.LayerControl().add_to(m)
     
-    # 绘制航线
+    # 添加A/B点标记（确保坐标有效）
+    folium.Marker(
+        [latA_disp, lngA_disp], 
+        popup=f"起点 A<br>{latA_disp:.6f}, {lngA_disp:.6f}", 
+        icon=folium.Icon(color="green", icon="play", prefix="fa")
+    ).add_to(m)
+    
+    folium.Marker(
+        [latB_disp, lngB_disp], 
+        popup=f"终点 B<br>{latB_disp:.6f}, {lngB_disp:.6f}", 
+        icon=folium.Icon(color="red", icon="stop", prefix="fa")
+    ).add_to(m)
+    
+    # 绘制直线航线（基础）
+    folium.PolyLine(
+        [(latA_disp, lngA_disp), (latB_disp, lngB_disp)],
+        color="blue", weight=4, opacity=0.8, popup="直线航线"
+    ).add_to(m)
+    
+    # 绘制障碍物
+    for i, obs in enumerate(st.session_state.polygon_obstacles):
+        try:
+            coords = []
+            for lng, lat in obs["coordinates"]:
+                if st.session_state.coord_type == "GCJ-02":
+                    wgs_lng, wgs_lat = gcj02_to_wgs84(lng, lat)
+                else:
+                    wgs_lng, wgs_lat = lng, lat
+                coords.append([wgs_lat, wgs_lng])
+            
+            color = "red" if obs["height"] >= st.session_state.flight_height else "orange"
+            folium.Polygon(
+                locations=coords,
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.3,
+                weight=2,
+                popup=f"{obs.get('name', f'障碍物{i+1}')}<br>高度: {obs['height']}m"
+            ).add_to(m)
+        except Exception as e:
+            st.warning(f"障碍物 {i+1} 绘制失败: {e}")
+    
+    # 绘制绕行航线
     if st.session_state.waypoints:
         display_waypoints = []
         for lng, lat in st.session_state.waypoints:
@@ -434,8 +496,14 @@ with map_col:
             else:
                 wgs_lng, wgs_lat = lng, lat
             display_waypoints.append([wgs_lat, wgs_lng])
-        folium.PolyLine(display_waypoints, color="blue", weight=4, opacity=0.8, 
-                       popup=f"航线: {st.session_state.selected_route}").add_to(m)
+        
+        folium.PolyLine(
+            display_waypoints, 
+            color="blue", 
+            weight=5, 
+            opacity=0.9,
+            popup=f"航线: {st.session_state.selected_route}"
+        ).add_to(m)
         
         # 绘制航点
         for i, (lng, lat) in enumerate(st.session_state.waypoints):
@@ -443,35 +511,43 @@ with map_col:
                 wgs_lng, wgs_lat = wgs84_to_gcj02(lng, lat)
             else:
                 wgs_lng, wgs_lat = lng, lat
-            folium.CircleMarker([wgs_lat, wgs_lng], radius=3, color="blue", fill=True,
-                               popup=f"航点{i}").add_to(m)
-        
-        # 绘制无人机当前位置
-        if st.session_state.flight_monitor and st.session_state.flight_monitor.current_position:
-            pos = st.session_state.flight_monitor.current_position
-            if st.session_state.coord_type == "GCJ-02":
-                disp_lng, disp_lat = wgs84_to_gcj02(pos[0], pos[1])
-            else:
-                disp_lng, disp_lat = pos[0], pos[1]
-            folium.Marker([disp_lat, disp_lng], icon=folium.Icon(color="purple", icon="plane", prefix="fa"),
-                         popup="无人机").add_to(m)
+            folium.CircleMarker(
+                [wgs_lat, wgs_lng], 
+                radius=4, 
+                color="blue", 
+                fill=True,
+                popup=f"航点 {i}"
+            ).add_to(m)
     
-    # 绘制障碍物
-    for i, obs in enumerate(st.session_state.polygon_obstacles):
-        coords = [[lat, lng] for lng, lat in obs["coordinates"]]
-        color = "red" if obs["height"] >= st.session_state.flight_height else "orange"
-        folium.Polygon(locations=coords, color=color, fill=True, fill_opacity=0.3,
-                       popup=f"{obs.get('name', f'障碍物{i+1}')}<br>高度: {obs['height']}m").add_to(m)
+    # 添加绘图工具
+    Draw(
+        draw_options={
+            "polygon": {"shapeOptions": {"color": "#ffdd00"}, "allowIntersection": False},
+            "rectangle": {"shapeOptions": {"color": "#ffdd00"}},
+            "circle": {"shapeOptions": {"color": "#ffdd00"}},
+            "polyline": False,
+            "marker": False,
+            "circlemarker": False
+        },
+        edit_options={"edit": True, "remove": True}
+    ).add_to(m)
     
-    Draw(draw_options={
-        "polygon": {"shapeOptions": {"color": "#ffdd00"}},
-        "rectangle": {"shapeOptions": {"color": "#ffdd00"}},
-        "circle": {"shapeOptions": {"color": "#ffdd00"}},
-        "polyline": False, "marker": False, "circlemarker": False
-    }).add_to(m)
     MousePosition().add_to(m)
     
-    output = st_folium(m, height=650, width="100%", key="map")
+    # 设置地图边界
+    try:
+        m.fit_bounds([[latA_disp, lngA_disp], [latB_disp, lngB_disp]])
+    except:
+        pass
+    
+    # 渲染地图
+    output = st_folium(m, height=600, width="100%", key="map")
+    
+    # 显示地图状态提示
+    if output is None:
+        st.info("地图加载中...")
+    else:
+        st.caption(f"地图中心: {center_lat:.6f}, {center_lng:.6f} | 当前障碍物: {len(st.session_state.polygon_obstacles)}个")
     
     # 处理绘制
     if output and output.get("last_active_drawing"):
@@ -500,10 +576,8 @@ with map_col:
             if coords and st.session_state.temp_new_obstacle is None:
                 st.session_state.temp_new_obstacle = coords
                 st.rerun()
-
-with monitor_col:
-    st.subheader("飞行监控")
-    
+                with monitor_col:
+    st.subheader("飞行监控")  
     if st.session_state.waypoints:
         st.info(f"航线: {st.session_state.selected_route} | {st.session_state.route_message}")
         st.metric("总航点数", f"{len(st.session_state.waypoints)}")
