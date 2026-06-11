@@ -576,8 +576,9 @@ with map_col:
             if coords and st.session_state.temp_new_obstacle is None:
                 st.session_state.temp_new_obstacle = coords
                 st.rerun()
-                with monitor_col:
-                st.subheader("飞行监控")  
+              with monitor_col:
+    st.subheader("飞行监控")
+    
     if st.session_state.waypoints:
         st.info(f"航线: {st.session_state.selected_route} | {st.session_state.route_message}")
         st.metric("总航点数", f"{len(st.session_state.waypoints)}")
@@ -648,7 +649,6 @@ with map_col:
                 st.caption(log)
         else:
             st.caption("等待飞行...")
-
 with control_col:
     st.subheader("控制面板")
     
